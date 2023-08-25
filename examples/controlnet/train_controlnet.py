@@ -12,7 +12,7 @@
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
-
+import ast
 import argparse
 import logging
 import math
@@ -37,8 +37,9 @@ from PIL import Image
 from torchvision import transforms
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer, PretrainedConfig
-
+from torchvision.transforms.functional import to_pil_image
 import diffusers
+from skimage.morphology import dilation,disk
 from diffusers import (
     AutoencoderKL,
     ControlNetModel,
@@ -117,7 +118,28 @@ def log_validation(vae, text_encoder, tokenizer, unet, controlnet, args, acceler
     image_logs = []
 
     for validation_prompt, validation_image in zip(validation_prompts, validation_images):
-        validation_image = Image.open(validation_image).convert("RGB")
+        #convert 10-channel tensor to 5 distinct images
+
+        #rgb image 
+
+        #gradient with respect to x
+
+        #gradient with respect to y
+
+        validation_image = torch.load(validation_image)
+        landcover_image_water = validation_image[:1,:,:]
+        landcover_image_forest = validation_image[1:2,:,:]
+        landcover_image_bare = validation_image[5:6,:,:]
+        grad_x = validation_image[8:9,:,:]
+        grad_y = validation_image[9:10,:,:]
+
+        landcover_image_water = to_pil_image(landcover_image_water, mode='L')
+        landcover_image_forest = to_pil_image(landcover_image_forest, mode='L')
+        landcover_image_bare = to_pil_image(landcover_image_bare, mode='L')
+        grad_x = to_pil_image(grad_x, mode='L')
+        grad_y = to_pil_image(grad_y, mode='L')
+
+        # validation_image = Image.open(validation_image).convert("RGB")
 
         images = []
 
@@ -130,7 +152,8 @@ def log_validation(vae, text_encoder, tokenizer, unet, controlnet, args, acceler
             images.append(image)
 
         image_logs.append(
-            {"validation_image": validation_image, "images": images, "validation_prompt": validation_prompt}
+            {"validation_image_water": landcover_image_water, "validation_image_forest": landcover_image_forest, "validation_image_bare":landcover_image_bare,
+             "validation_grad_x":grad_x,"validation_grad_y":grad_y, "images": images, "validation_prompt": validation_prompt}
         )
 
     for tracker in accelerator.trackers:
@@ -156,9 +179,18 @@ def log_validation(vae, text_encoder, tokenizer, unet, controlnet, args, acceler
             for log in image_logs:
                 images = log["images"]
                 validation_prompt = log["validation_prompt"]
-                validation_image = log["validation_image"]
+                validation_image_1 = log["validation_image_water"]
+                validation_image_2 = log['validation_image_forest']
+                validation_image_3  = log['validation_image_bare']
+                validation_image_4 = log['validation_grad_x']
+                validation_image_5 = log['validation_grad_y']
 
-                formatted_images.append(wandb.Image(validation_image, caption="Controlnet conditioning"))
+                formatted_images.append(wandb.Image(validation_image_1, caption="Condition water"))
+                formatted_images.append(wandb.Image(validation_image_2, caption="Condition forest"))
+                formatted_images.append(wandb.Image(validation_image_3, caption="Condition bare"))
+                formatted_images.append(wandb.Image(validation_image_4, caption="Condition gradient X"))
+                formatted_images.append(wandb.Image(validation_image_5, caption="Condition gradient Y"))
+            
 
                 for image in images:
                     image = wandb.Image(image, caption=validation_prompt)
@@ -577,7 +609,14 @@ def parse_args(input_args=None):
         )
 
     return args
-
+from torchvision.transforms import Resize, GaussianBlur
+from torchvision.transforms.functional import to_tensor, hflip, adjust_brightness
+from PIL import Image, ImageFilter
+import torch
+import torch
+from PIL import Image
+import torchvision.transforms
+import numpy as np
 
 def make_train_dataset(args, tokenizer, accelerator):
     # Get the datasets: you can either provide your own training and evaluation files (see below)
@@ -671,19 +710,198 @@ def make_train_dataset(args, tokenizer, accelerator):
             transforms.ToTensor(),
         ]
     )
+    def closest_key(search_key,dict):
+    # https://www.geeksforgeeks.org/python-find-the-closest-key-in-dictionary/"
+      res =  dict[
+      min(dict.keys(), key = lambda key: abs(key-search_key))]
+      return res
+    def generate_text_prompt(string_metadata_dict):
+      constant_term = "Photorealistic, high-quality, high-resolution, aerial image/photograph of a landscape, birds-eye view"
+      metadata_dict = ast.literal_eval(string_metadata_dict)
+      biome = metadata_dict['biom']
+      max_elevation = metadata_dict['max']
+      elevation_range_dict = {
+        400: 'lowland',
+        1800: 'montane',
+        2300: 'subalpine',
+        3000: 'alpine'
+    }
+      elevation_range_string = closest_key(max_elevation, elevation_range_dict)
+      string = constant_term + f", {elevation_range_string}, {biome}"
+      return string
+    
+    def create_landcover_stack(landcover_image):
+        #returns a tensor of shape 6,512,512
+        
+        #first resize the image from (256,256,3) to (512,512,3)
+        landcover_image = landcover_image.resize((512,512),Image.NEAREST) #resize to 512, using nearest neighbour to stopintroducing new pixel values
+
+        #then convert the landcover image to grey scale and re-order the importance of the 
+        #classes
+        grey_image = landcover_image.convert('L')
+        grey_array = np.array(grey_image)
+
+        indices = np.where(grey_array==122)#remap roads as most important
+        grey_array[indices] = 255
+
+        #map water as the next most important
+        indices = np.where(grey_array==101)
+        grey_array[indices] = 254
+
+        indices = np.where(grey_array==151) # remap agriculture as 3rd most important
+        grey_array[indices] = 253
+
+        #Map trees as more important than grassland
+        indices = np.where(grey_array== 59)
+        grey_array[indices] = 252
+
+        #Map snow and ice
+        indices = np.where(grey_array== 134)
+        grey_array[indices] = 251
+
+        #apply dilation to make the image more 'sketch like'
+        
+        grey_array = dilation(grey_array, disk(radius=3))
+
+        #ordering of stack 
+
+        #[water,forest,grassland,shrubland,snow and ice,bare,agriculture,gradx,grady]
+        landcover_tensor_arr = []
+
+
+        #extract water binary image
+        indices = np.where(grey_array==254)
+        water_binary_array = np.zeros((512,512),dtype=np.uint8)
+        water_binary_array[indices] = 255
+        water_binary_image = Image.fromarray(water_binary_array)
+        water_tensor = to_tensor(water_binary_image)
+        landcover_tensor_arr.append(water_tensor)
+
+
+        #extract_forest binary image
+        indices = np.where(grey_array==252)
+        forest_binary_array = np.zeros((512,512),dtype=np.uint8)
+        forest_binary_array[indices] = 255
+        forest_binary_image = Image.fromarray(forest_binary_array)
+        forest_tensor = to_tensor(forest_binary_image)
+        landcover_tensor_arr.append(forest_tensor)
+
+
+        #extract grassland binary image
+        indices = np.where(grey_array==225)
+        grassland_binary_array = np.zeros((512,512),dtype=np.uint8)
+        grassland_binary_array[indices] = 255
+        grassland_binary_image = Image.fromarray(grassland_binary_array)
+        grassland_tensor = to_tensor(grassland_binary_image)
+        landcover_tensor_arr.append(grassland_tensor)
+
+        #extract snow binary image
+        indices = np.where(grey_array==251)
+        snow_binary_array = np.zeros((512,512),dtype=np.uint8)
+        snow_binary_array[indices] = 255
+        snow_binary_image = Image.fromarray(snow_binary_array)
+        snow_tensor = to_tensor(snow_binary_image)
+        landcover_tensor_arr.append(snow_tensor)
+
+        #extract shrub binary image
+        indices = np.where(grey_array==195)
+        shrub_binary_array = np.zeros((512,512),dtype=np.uint8)
+        shrub_binary_array[indices] = 255
+        shrub_binary_image = Image.fromarray(shrub_binary_array)
+        shrub_tensor = to_tensor(shrub_binary_image)
+        landcover_tensor_arr.append(shrub_tensor)
+
+
+        #extract bare binary image
+        indices = np.where(grey_array==213)
+        bare_binary_array = np.zeros((512,512),dtype=np.uint8)
+        bare_binary_array[indices] = 255
+        bare_binary_image = Image.fromarray(bare_binary_array)
+        bare_tensor = to_tensor(bare_binary_image)
+        landcover_tensor_arr.append(bare_tensor)
+
+        #extract road binary image
+        indices = np.where(grey_array==255)
+        road_binary_array = np.zeros((512,512),dtype=np.uint8)
+        road_binary_array[indices] = 255
+        road_binary_image = Image.fromarray(road_binary_array)
+        road_tensor= to_tensor(road_binary_image)
+        landcover_tensor_arr.append(road_tensor)
+
+
+        #extract agriculture
+        indices = np.where(grey_array==253)
+        agriculture_binary_array = np.zeros((512,512),dtype=np.uint8)
+        agriculture_binary_array[indices] = 255
+        agriculture_binary_image = Image.fromarray(agriculture_binary_array)
+        agriculture_tensor = to_tensor(agriculture_binary_image)
+        landcover_tensor_arr.append(agriculture_tensor)
+
+        landcover_tensor = torch.cat(landcover_tensor_arr,dim=0)
+        # print(f"Landcover Tensor shape {landcover_tensor.shape}")
+        return landcover_tensor
+
+    def transform_and_stack(landcover_image,conditioning_image):
+        #conditioning image = scaled DEM
+        #transform landcover image
+        landcover_tensor = create_landcover_stack(landcover_image)
+
+
+        numpy_array_conditioning = np.array(conditioning_image).reshape(512,512)/65535.0
+        # print(numpy_array_conditioning)
+        # print(f"Conditioning numpy shape before taking gradient is {numpy_array_conditioning.shape}")
+        grad_x,grad_y = np.gradient(numpy_array_conditioning.astype(np.float32))
+
+
+        # (-1,1) -> (0,1)
+        grad_x = grad_x/0.02  #0.02 comes from 1500/65535 where 1500 is the max possible elevation range
+        grad_y = grad_y/0.02
+
+
+        #begin credit: J and D Lochner
+        grad_x = (1 + grad_x)/2
+        # Normalise range (0,1) to integers in range (0,255)
+        grad_x = 255 * grad_x
+        grad_x = np.rint(grad_x).clip(0, 255).astype(np.uint8)
+
+        # (-1,1) -> (0,1)
+        grad_y = (1 + grad_y)/2
+
+        # Normalise range (0,1) to integers in range (0,255)
+        grad_y = 255 * grad_y
+        grad_y = np.rint(grad_y).clip(0, 255).astype(np.uint8)
+        #end credit J and D Lochner
+
+
+
+
+        grad_x = Image.fromarray(grad_x,mode='L')
+        grad_y = Image.fromarray(grad_y,mode='L')
+
+        gradx_tensor = to_tensor(grad_x)
+        grady_tensor = to_tensor(grad_y)
+        conditioning_tensor = torch.cat([landcover_tensor, gradx_tensor,grady_tensor], dim=0)
+        # print(f"Conditioning Tensor Shape {conditioning_tensor}")
+        return conditioning_tensor
+
 
     def preprocess_train(examples):
+        conditioning_images = [conditioning_image for conditioning_image in examples['conditioning_image']]
+        landcover_images =[image for image in examples['landcover_image']]
+        images = [image_transforms(image) for image in examples['image']]
+        i = 0
+        for landcover_image,conditioning_image in zip(landcover_images,conditioning_images):
+          conditioning_image = [transform_and_stack(landcover_image,conditioning_image)]
+          conditioning_images[i] = conditioning_image[0]
+          i+=1
+        examples['text'] = [generate_text_prompt(prompt) for prompt in examples['text']]
         images = [image.convert("RGB") for image in examples[image_column]]
         images = [image_transforms(image) for image in images]
-
-        conditioning_images = [image.convert("RGB") for image in examples[conditioning_image_column]]
-        conditioning_images = [conditioning_image_transforms(image) for image in conditioning_images]
-
         examples["pixel_values"] = images
         examples["conditioning_pixel_values"] = conditioning_images
         examples["input_ids"] = tokenize_captions(examples)
-
         return examples
+
 
     with accelerator.main_process_first():
         if args.max_train_samples is not None:
@@ -995,7 +1213,8 @@ def main(args):
                 # Convert images to latent space
                 latents = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
                 latents = latents * vae.config.scaling_factor
-
+                # print(f"Shape of batch {batch}")
+                # print(batch["input_ids"])
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents)
                 bsz = latents.shape[0]

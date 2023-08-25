@@ -608,7 +608,7 @@ class StableDiffusionControlNetPipeline(
                 f"image must be passed and be one of PIL image, numpy array, torch tensor, list of PIL images, list of numpy arrays or list of torch tensors, but is {type(image)}"
             )
 
-        if image_is_pil:
+        if image_is_tensor:
             image_batch_size = 1
         else:
             image_batch_size = len(image)

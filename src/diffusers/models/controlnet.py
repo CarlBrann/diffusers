@@ -11,12 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+#modified by Carl Brann to work with 5-Channel Conditioning
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 from torch import nn
 from torch.nn import functional as F
+import torch.nn.init
 
 from ..configuration_utils import ConfigMixin, register_to_config
 from ..loaders import FromOriginalControlnetMixin
@@ -69,7 +72,7 @@ class ControlNetConditioningEmbedding(nn.Module):
     def __init__(
         self,
         conditioning_embedding_channels: int,
-        conditioning_channels: int = 3,
+        conditioning_channels: int = 10,
         block_out_channels: Tuple[int] = (16, 32, 96, 256),
     ):
         super().__init__()
@@ -173,7 +176,7 @@ class ControlNetModel(ModelMixin, ConfigMixin, FromOriginalControlnetMixin):
     def __init__(
         self,
         in_channels: int = 4,
-        conditioning_channels: int = 3,
+        conditioning_channels: int = 10,
         flip_sin_to_cos: bool = True,
         freq_shift: int = 0,
         down_block_types: Tuple[str] = (
