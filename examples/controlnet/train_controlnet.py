@@ -872,9 +872,6 @@ def make_train_dataset(args, tokenizer, accelerator):
         grad_y = np.rint(grad_y).clip(0, 255).astype(np.uint8)
         #end credit J and D Lochner
 
-
-
-
         grad_x = Image.fromarray(grad_x,mode='L')
         grad_y = Image.fromarray(grad_y,mode='L')
 
@@ -894,7 +891,7 @@ def make_train_dataset(args, tokenizer, accelerator):
           conditioning_image = [transform_and_stack(landcover_image,conditioning_image)]
           conditioning_images[i] = conditioning_image[0]
           i+=1
-        examples['text'] = [generate_text_prompt(prompt) for prompt in examples['text']]
+        # examples['text'] = [generate_text_prompt(prompt) for prompt in examples['text']]
         images = [image.convert("RGB") for image in examples[image_column]]
         images = [image_transforms(image) for image in images]
         examples["pixel_values"] = images
